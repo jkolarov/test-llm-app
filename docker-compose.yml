@@ -20,6 +20,8 @@ services:
     environment:
       - DATABASE_URL=postgresql://postgres:postgres@db:5432/postgres
       - OLLAMA_URL=http://ollama:11434
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
 
   db:
     image: ankane/pgvector

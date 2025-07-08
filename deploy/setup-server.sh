@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Debian Server Setup Script for LLM App
+# Debian Server Setup Script for LLM App (Internal Network)
 # This script prepares a Debian server for production deployment
 
 set -e
@@ -29,7 +29,7 @@ if [[ $EUID -ne 0 ]]; then
     error "This script must be run as root"
 fi
 
-log "Starting Debian server setup for LLM App..."
+log "Starting Debian server setup for LLM App (Internal Network)..."
 
 # Update system
 log "Updating system packages..."
@@ -45,9 +45,6 @@ apt install -y \
     htop \
     ufw \
     fail2ban \
-    nginx \
-    certbot \
-    python3-certbot-nginx \
     unzip \
     software-properties-common \
     apt-transport-https \
@@ -87,19 +84,20 @@ else
     warn "No NVIDIA GPU detected. Ollama will run on CPU only."
 fi
 
-# Configure firewall
-log "Configuring firewall..."
+# Configure firewall for internal network
+log "Configuring firewall for internal network..."
 ufw default deny incoming
 ufw default allow outgoing
 ufw allow ssh
 ufw allow 80/tcp
-ufw allow 443/tcp
+ufw allow 8000/tcp
+ufw allow 11434/tcp
 ufw allow 22/tcp
 ufw --force enable
 
 # Configure fail2ban
 log "Configuring fail2ban..."
-cat > /etc/fail2ban/jail.local << EOF
+cat > /etc/fail2ban/jail.local << 'FAIL2BAN_EOF'
 [DEFAULT]
 bantime = 3600
 findtime = 600
@@ -110,14 +108,7 @@ enabled = true
 port = ssh
 logpath = /var/log/auth.log
 maxretry = 3
-
-[nginx-http-auth]
-enabled = true
-filter = nginx-http-auth
-port = http,https
-logpath = /var/log/nginx/error.log
-maxretry = 3
-EOF
+FAIL2BAN_EOF
 
 systemctl enable fail2ban
 systemctl restart fail2ban
@@ -130,7 +121,7 @@ chown $SUDO_USER:$SUDO_USER $APP_DIR
 
 # Create systemd service for auto-start
 log "Creating systemd service..."
-cat > /etc/systemd/system/llm-app.service << EOF
+cat > /etc/systemd/system/llm-app.service << 'SERVICE_EOF'
 [Unit]
 Description=LLM App Docker Compose
 Requires=docker.service
@@ -146,14 +137,14 @@ TimeoutStartSec=0
 
 [Install]
 WantedBy=multi-user.target
-EOF
+SERVICE_EOF
 
 systemctl daemon-reload
 systemctl enable llm-app.service
 
 # Create backup script
 log "Creating backup script..."
-cat > /opt/llm-app/backup.sh << 'EOF'
+cat > /opt/llm-app/backup.sh << 'BACKUP_EOF'
 #!/bin/bash
 BACKUP_DIR="/opt/llm-app/backups"
 DATE=$(date +%Y%m%d_%H%M%S)
@@ -171,7 +162,7 @@ gzip $BACKUP_FILE
 find $BACKUP_DIR -name "*.sql.gz" -mtime +30 -delete
 
 echo "Backup created: $BACKUP_FILE.gz"
-EOF
+BACKUP_EOF
 
 chmod +x /opt/llm-app/backup.sh
 
@@ -181,7 +172,7 @@ echo "0 2 * * * /opt/llm-app/backup.sh" | crontab -
 
 # Configure log rotation
 log "Configuring log rotation..."
-cat > /etc/logrotate.d/llm-app << EOF
+cat > /etc/logrotate.d/llm-app << 'LOGROTATE_EOF'
 /opt/llm-app/deploy/deploy.log {
     daily
     missingok
@@ -191,72 +182,98 @@ cat > /etc/logrotate.d/llm-app << EOF
     notifempty
     create 644 root root
 }
-EOF
+LOGROTATE_EOF
 
 # Set up monitoring
 log "Setting up basic monitoring..."
 apt install -y htop iotop nethogs
 
 # Create monitoring script
-cat > /opt/llm-app/monitor.sh << 'EOF'
+log "Creating monitoring script..."
+cat > /opt/llm-app/monitor.sh << 'MONITOR_EOF'
 #!/bin/bash
 echo "=== LLM App System Status ==="
 echo "Date: $(date)"
-echo "Uptime: $(uptime)"
-echo "Memory: $(free -h)"
-echo "Disk: $(df -h /)"
-echo "Docker containers:"
-docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
-echo "=== End Status ==="
-EOF
+echo ""
+
+echo "=== Docker Services ==="
+docker-compose -f /opt/llm-app/docker-compose.prod.yml ps
+echo ""
+
+echo "=== System Resources ==="
+echo "CPU Usage:"
+top -bn1 | grep "Cpu(s)" | awk '{print $2}' | cut -d'%' -f1
+echo "Memory Usage:"
+free -h
+echo ""
+
+echo "=== Disk Usage ==="
+df -h
+echo ""
+
+echo "=== Network Connections ==="
+netstat -tuln | grep -E ':(80|8000|11434)'
+echo ""
+
+echo "=== Recent Logs ==="
+docker-compose -f /opt/llm-app/docker-compose.prod.yml logs --tail=10
+MONITOR_EOF
 
 chmod +x /opt/llm-app/monitor.sh
 
 # Create deployment instructions
 log "Creating deployment instructions..."
-cat > /opt/llm-app/DEPLOYMENT.md << 'EOF'
-# LLM App Production Deployment
+cat > /opt/llm-app/DEPLOYMENT_INSTRUCTIONS.txt << 'INSTRUCTIONS_EOF'
+LLM App Deployment Instructions (Internal Network)
+================================================
 
-## Quick Start
-1. Clone the repository: `git clone https://github.com/jkolarov/test-llm-app.git`
-2. Copy environment file: `cp env.production.example .env.production`
-3. Edit environment variables: `nano .env.production`
-4. Run deployment: `./deploy/deploy.sh start`
+1. CLONE THE REPOSITORY:
+   sudo git clone https://github.com/jkolarov/test-llm-app.git /opt/llm-app
+   sudo chown -R $USER:$USER /opt/llm-app
+   cd /opt/llm-app
 
-## Management Commands
-- Start: `./deploy/deploy.sh start`
-- Stop: `./deploy/deploy.sh stop`
-- Restart: `./deploy/deploy.sh restart`
-- Update: `./deploy/deploy.sh update`
-- Rollback: `./deploy/deploy.sh rollback`
+2. CONFIGURE ENVIRONMENT:
+   cp env.production.example .env.production
+   nano .env.production
+   
+   Update these values:
+   - DB_PASSWORD=your_secure_password
+   - SECRET_KEY=your_secret_key
+   - JWT_SECRET=your_jwt_secret
 
-## Monitoring
-- Check status: `./monitor.sh`
-- View logs: `docker-compose -f docker-compose.prod.yml logs -f`
-- Backup: `./backup.sh`
+3. START THE APPLICATION:
+   chmod +x deploy/deploy.sh
+   ./deploy/deploy.sh start
 
-## SSL Certificate
-To enable HTTPS, run:
-```bash
-certbot --nginx -d your-domain.com
-```
+4. VERIFY DEPLOYMENT:
+   ./deploy/deploy.sh status
+   ./monitor.sh
 
-## Security Notes
-- Change default passwords in .env.production
-- Keep system updated: `apt update && apt upgrade`
-- Monitor logs regularly
-- Backup database daily
-EOF
+5. ACCESS THE APPLICATION:
+   - Frontend: http://YOUR_SERVER_IP:80
+   - Backend API: http://YOUR_SERVER_IP:8000/docs
+   - Ollama: http://YOUR_SERVER_IP:11434
+
+6. USEFUL COMMANDS:
+   - View logs: docker-compose -f docker-compose.prod.yml logs -f
+   - Stop app: ./deploy/deploy.sh stop
+   - Restart app: ./deploy/deploy.sh restart
+   - Monitor: ./monitor.sh
+   - Backup: ./backup.sh
+
+7. TROUBLESHOOTING:
+   - Check service status: systemctl status llm-app
+   - View system logs: journalctl -u llm-app -f
+   - Check Docker: docker ps -a
+   - Check Ollama: curl http://localhost:11434/api/tags
+
+The application will auto-start on system boot.
+INSTRUCTIONS_EOF
 
 log "Server setup completed successfully!"
 log "Next steps:"
 log "1. Clone the repository to /opt/llm-app"
 log "2. Configure .env.production with your settings"
 log "3. Run: ./deploy/deploy.sh start"
-log "4. Set up SSL certificate with certbot"
-log "5. Configure your domain DNS"
-
-# Switch to application directory
-cd $APP_DIR
-
+log "4. Access via internal network IP"
 log "Setup completed! You can now deploy your LLM app." 

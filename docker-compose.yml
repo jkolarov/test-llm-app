@@ -44,6 +44,7 @@ services:
     volumes:
       - ollama_data:/root/.ollama
 
+
 volumes:
   pgdata:
   ollama_data: 

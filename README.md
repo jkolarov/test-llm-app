@@ -1,5 +1,9 @@
 # Ollama Test App
 
+**Last updated:** July 2025
+
+> 🚀 Now with full-stack CI/CD, GitHub Actions, and production-ready Docker deployment! See DEPLOYMENT_GUIDE.md for details.
+
 A modern AI chat application with real-time system monitoring and live Docker container statistics.
 
 ## Architecture

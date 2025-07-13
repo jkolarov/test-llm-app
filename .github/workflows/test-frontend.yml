@@ -1,4 +1,4 @@
-name: Build and Deploy React App
+name: Test Frontend
 
 on:
   push:
@@ -7,7 +7,7 @@ on:
     branches: [ main ]
 
 jobs:
-  build:
+  test:
     runs-on: ubuntu-latest
 
     steps:
@@ -17,7 +17,7 @@ jobs:
       - name: 🟢 Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: '18'
+          node-version: '20'
           cache: 'npm'
           cache-dependency-path: frontend/package-lock.json
 
@@ -26,7 +26,7 @@ jobs:
           cd frontend
           npm ci
 
-      - name: 🧹 Lint
+      - name: 🔍 Lint
         run: |
           cd frontend
           npm run lint || echo "Lint errors ignored"
@@ -36,14 +36,24 @@ jobs:
           cd frontend
           npm audit --production || echo "Audit issues ignored"
 
-      - name: 🏗 Build
+      - name: 🧪 Run unit tests
+        run: |
+          cd frontend
+          npm test -- --run
+
+      - name: 📊 Test coverage
+        run: |
+          cd frontend
+          npm run test:coverage
+
+      - name: 🏗 Build test
         run: |
           cd frontend
           npm run build
 
-      - name: 🚀 Deploy to GitHub Pages
-        if: github.ref == 'refs/heads/main'
-        uses: peaceiris/actions-gh-pages@v4
+      - name: 📤 Upload coverage to Codecov
+        uses: codecov/codecov-action@v3
         with:
-          personal_token: ${{ secrets.APP_DEPLOY }}
-          publish_dir: ./frontend/build 
+          file: ./frontend/coverage/lcov.info
+          flags: frontend
+          name: frontend-coverage 

@@ -55,6 +55,10 @@ const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
 // Helper to build websocket URL from API_URL
 const WS_URL = API_URL.replace('http', 'ws');
 
+// Configure axios defaults
+axios.defaults.timeout = 300000; // 5 minutes timeout for large models
+axios.defaults.headers.common['Content-Type'] = 'application/json';
+
 function StatusChip({ status, label, icon }) {
   return (
     <Chip
@@ -111,7 +115,7 @@ function DockerCard({ status, containers, responseTime, error, history }) {
         <Box sx={{ display: 'flex', alignItems: 'center', mb: 1 }}>
           <Apps color="primary" />
           <Typography variant="h6" sx={{ ml: 1, fontWeight: 600 }}>
-            Docker Containers
+            Ollama Container
           </Typography>
           <Chip
             label={status}
@@ -130,32 +134,43 @@ function DockerCard({ status, containers, responseTime, error, history }) {
             No running containers
           </Typography>
         )}
-        {containers.map((c, idx) => {
-          const hist = history[c.name] || { cpu: [], mem: [] };
-          const data = hist.cpu.map((v,i)=>({idx:i, cpu:v, mem: hist.mem[i] || 0}));
-          return (
-            <Box key={idx} sx={{ mb: 2 }}>
-              <Typography variant="body2" sx={{ fontWeight: 500 }}>
-                {c.name}
-              </Typography>
-              <ResponsiveContainer width="100%" height={50}>
-                <LineChart data={data} margin={{top:4,right:4,left:0,bottom:4}}>
-                  <Line type="monotone" dataKey="cpu" stroke="#4caf50" dot={false} strokeWidth={2} />
-                  <Line type="monotone" dataKey="mem" stroke="#2196f3" dot={false} strokeWidth={2} />
-                  <XAxis dataKey="idx" hide={true} />
-                  <YAxis domain={[0,100]} hide={true} />
-                  <Tooltip formatter={(value,name)=>[value.toFixed(1)+'%', name==='cpu'?'CPU':'RAM']} />
-                </LineChart>
-              </ResponsiveContainer>
-            </Box>
-          );
-        })}
+        {containers
+          .filter(c => c.name === 'test-llm-app-ollama-1')
+          .map((c, idx) => {
+            const hist = history[c.name] || { cpu: [], mem: [] };
+            const data = hist.cpu.map((v,i)=>({idx:i, cpu:v, mem: hist.mem[i] || 0}));
+            return (
+              <Box key={idx} sx={{ mb: 2 }}>
+                <Typography variant="body2" sx={{ fontWeight: 500 }}>
+                  {c.name}
+                </Typography>
+                <ResponsiveContainer width="100%" height={50}>
+                  <LineChart data={data} margin={{top:4,right:4,left:0,bottom:4}}>
+                    <Line type="monotone" dataKey="cpu" stroke="#4caf50" dot={false} strokeWidth={2} />
+                    <Line type="monotone" dataKey="mem" stroke="#2196f3" dot={false} strokeWidth={2} />
+                    <XAxis dataKey="idx" hide={true} />
+                    <YAxis domain={[0,100]} hide={true} />
+                    <Tooltip formatter={(value,name)=>[value.toFixed(1)+'%', name==='cpu'?'CPU':'RAM']} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </Box>
+            );
+          })}
       </CardContent>
     </Card>
   );
 }
 
-function ChatMessage({ message, isUser }) {
+function ChatMessage({ message, isUser, performanceData }) {
+  const getPerformanceScore = (tokensPerSecond) => {
+    if (tokensPerSecond >= 100) return { score: 'Fast', color: 'success', value: tokensPerSecond };
+    if (tokensPerSecond >= 50) return { score: 'Good', color: 'warning', value: tokensPerSecond };
+    if (tokensPerSecond >= 20) return { score: 'Slow', color: 'error', value: tokensPerSecond };
+    return { score: 'Very Slow', color: 'error', value: tokensPerSecond };
+  };
+
+  const performanceScore = performanceData ? getPerformanceScore(performanceData.eval_rate) : null;
+
   return (
     <Box
       sx={{
@@ -174,6 +189,23 @@ function ChatMessage({ message, isUser }) {
         }}
       >
         <Typography variant="body1">{message}</Typography>
+        {!isUser && performanceData && (
+          <Box sx={{ mt: 1, pt: 1, borderTop: 1, borderColor: 'divider' }}>
+            <Typography variant="caption" color="text.secondary">
+              Performance: {performanceData.total_duration.toFixed(2)}s total
+            </Typography>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mt: 0.5 }}>
+              <Chip 
+                label={`${performanceScore.score} (${performanceScore.value.toFixed(1)} tokens/s)`}
+                color={performanceScore.color}
+                size="small"
+              />
+              <Typography variant="caption" color="text.secondary">
+                {performanceData.eval_count} tokens generated
+              </Typography>
+            </Box>
+          </Box>
+        )}
       </Paper>
     </Box>
   );
@@ -183,6 +215,18 @@ function ChatWindow({ currentSession, onSessionChange }) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  const [model, setModel] = useState('mistral:7b');
+  const availableModels = ['mistral:7b', 'phi3:mini', 'llama3.1:latest'];
+  const messagesEndRef = React.useRef(null);
+
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  };
+
+  // Auto-scroll when messages change
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages, loading]);
 
   // Load messages when session changes
   useEffect(() => {
@@ -197,7 +241,12 @@ function ChatWindow({ currentSession, onSessionChange }) {
     try {
       const res = await axios.get(`${API_URL}/api/sessions/${sessionId}/messages`);
       if (res.data.status === 'ok') {
-        setMessages(res.data.messages);
+        // Use performance_data from database (will be null for old messages)
+        const messagesWithPerformance = res.data.messages.map(msg => ({
+          ...msg,
+          performanceData: msg.performance_data || msg.performanceData
+        }));
+        setMessages(messagesWithPerformance);
       }
     } catch (e) {
       console.error('Error loading messages:', e);
@@ -212,16 +261,14 @@ function ChatWindow({ currentSession, onSessionChange }) {
     setLoading(true);
     
     try {
-      console.log('Sending message:', userMessage);
       const res = await axios.post(`${API_URL}/api/ollama_chat`, { 
         message: userMessage,
-        session_id: currentSession?.id
+        session_id: currentSession?.id,
+        model // <-- send selected model
       });
       
-      console.log('Response received:', res.data);
-      
       if (res.data.status === 'ok') {
-        // Reload messages to get the updated conversation
+        // Reload messages to get the updated conversation with performance data
         await loadSessionMessages(res.data.session_id);
         
         // Update current session if it's a new one
@@ -242,13 +289,30 @@ function ChatWindow({ currentSession, onSessionChange }) {
   return (
     <Box sx={{ height: '70vh', display: 'flex', flexDirection: 'column' }}>
       {/* Chat Header */}
-      <Box sx={{ p: 2, borderBottom: 1, borderColor: 'divider', backgroundColor: 'background.paper' }}>
-        <Typography variant="h6" sx={{ fontWeight: 600 }}>
-          {currentSession ? currentSession.title : 'New Chat'}
-        </Typography>
-        <Typography variant="body2" color="text.secondary">
-          {currentSession ? 'Continue your conversation' : 'Start a new conversation'}
-        </Typography>
+      <Box sx={{ p: 2, borderBottom: 1, borderColor: 'divider', backgroundColor: 'background.paper', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <Box>
+          <Typography variant="h6" sx={{ fontWeight: 600 }}>
+            {currentSession ? currentSession.title : 'New Chat'}
+          </Typography>
+          <Typography variant="body2" color="text.secondary">
+            {currentSession ? 'Continue your conversation' : 'Start a new conversation'}
+          </Typography>
+        </Box>
+        <Box>
+          <TextField
+            select
+            label="Model"
+            value={model}
+            onChange={e => setModel(e.target.value)}
+            size="small"
+            SelectProps={{ native: true }}
+            sx={{ minWidth: 160 }}
+          >
+            {availableModels.map(m => (
+              <option key={m} value={m}>{m}</option>
+            ))}
+          </TextField>
+        </Box>
       </Box>
 
       {/* Messages Area */}
@@ -266,7 +330,7 @@ function ChatWindow({ currentSession, onSessionChange }) {
         {messages.length === 0 && !loading && (
           <Box sx={{ textAlign: 'center', mt: 4, color: 'text.secondary' }}>
             <Typography variant="h6" gutterBottom>
-              {currentSession ? 'Continue your conversation' : 'Welcome to Mistral AI Chat'}
+              {currentSession ? 'Continue your conversation' : 'Welcome to AI Chat'}
             </Typography>
             <Typography variant="body2">
               {currentSession ? 'Type a message to continue' : 'Start a conversation by typing a message below'}
@@ -275,7 +339,7 @@ function ChatWindow({ currentSession, onSessionChange }) {
         )}
         
         {messages.map((msg, i) => (
-          <ChatMessage key={i} message={msg.content} isUser={msg.role === 'user'} />
+          <ChatMessage key={i} message={msg.content} isUser={msg.role === 'user'} performanceData={msg.performanceData} />
         ))}
         
         {loading && (
@@ -284,12 +348,13 @@ function ChatWindow({ currentSession, onSessionChange }) {
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                 <CircularProgress size={16} />
                 <Typography variant="body2" color="text.secondary">
-                  Searching and thinking...
+                  Model {model} is thinking...
                 </Typography>
               </Box>
             </Paper>
           </Box>
         )}
+        <div ref={messagesEndRef} />
       </Box>
 
       {/* Input Area */}
@@ -407,63 +472,98 @@ function App() {
   const [sessions, setSessions] = useState([]);
   const [currentSession, setCurrentSession] = useState(null);
 
+  const waitForBackend = async (maxRetries = 10, delay = 1000) => {
+    for (let i = 0; i < maxRetries; i++) {
+      try {
+        // Try using fetch instead of axios
+        const response = await fetch(`${API_URL}/api/health`, {
+          method: 'GET',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          mode: 'cors'
+        });
+        
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+        
+        const data = await response.json();
+        return true;
+      } catch (error) {
+        if (i < maxRetries - 1) {
+          await new Promise(resolve => setTimeout(resolve, delay));
+        }
+      }
+    }
+    return false;
+  };
+
   const fetchStatuses = async () => {
     const t0 = performance.now();
     try {
-      console.log('Fetching statuses from:', API_URL);
-      const [dbRes, ollamaRes, dockerRes] = await Promise.all([
-        axios.get(`${API_URL}/api/db_status?t=${Date.now()}`),
-        axios.get(`${API_URL}/api/ollama_status?t=${Date.now()}`),
-        axios.get(`${API_URL}/api/docker_stats?t=${Date.now()}`)
+      // Try to wait for backend to be ready, but don't fail if it doesn't work
+      let backendReady = false;
+      try {
+        backendReady = await waitForBackend(3, 2000); // Shorter timeout for faster failure
+      } catch (e) {
+        // Proceed anyway
+      }
+      
+      // Fetch all statuses in parallel
+      const [dbRes, ollamaRes, dockerRes] = await Promise.allSettled([
+        axios.get(`${API_URL}/api/db_status`),
+        axios.get(`${API_URL}/api/ollama_status`),
+        axios.get(`${API_URL}/api/docker_stats`)
       ]);
-      const t1 = performance.now();
-      const dbTime = dbRes.data.response_time || null;
-      const ollamaTime = ollamaRes.data.response_time || null;
-      const dockerTime = dockerRes.data.response_time || null;
-      console.log('DB response:', dbRes.data, 'Time:', dbTime);
-      console.log('Ollama response:', ollamaRes.data, 'Time:', ollamaTime);
-      console.log('Docker response:', dockerRes.data, 'Time:', dockerTime);
+      
+      const dbTime = dbRes.status === 'fulfilled' ? dbRes.value.data.response_time : null;
+      const ollamaTime = ollamaRes.status === 'fulfilled' ? ollamaRes.value.data.response_time : null;
+      const dockerTime = dockerRes.status === 'fulfilled' ? dockerRes.value.data.response_time : null;
+      
       setDbStatus({
-        status: dbRes.data.status === 'ok' ? 'ok' : 'error',
-        details: dbRes.data.status === 'ok' ? 
-          `Tables: ${dbRes.data.table_count || 0}, Sessions: ${dbRes.data.session_count || 0}, Messages: ${dbRes.data.message_count || 0} (Time: ${dbTime ? dbTime.toFixed(2) + 's' : 'n/a'})` : 
-          (dbRes.data.error || 'Connection failed') + (dbTime ? ` (Time: ${dbTime.toFixed(2)}s)` : '')
+        status: dbRes.status === 'fulfilled' && dbRes.value.data.status === 'ok' ? 'ok' : 'error',
+        details: dbRes.status === 'fulfilled' && dbRes.value.data.status === 'ok' ? 
+          `Tables: ${dbRes.value.data.table_count || 0}, Sessions: ${dbRes.value.data.session_count || 0}, Messages: ${dbRes.value.data.message_count || 0} (Time: ${dbTime ? dbTime.toFixed(2) + 's' : 'n/a'})` : 
+          'Connection failed'
       });
       setOllamaStatus({
-        status: ollamaRes.data.status === 'ok' ? 'ok' : 'error',
-        details: ollamaRes.data.status === 'ok' ? 
-          `Models: ${ollamaRes.data.models?.map(m => m.name).join(', ') || 'No models found'} (Time: ${ollamaTime ? ollamaTime.toFixed(2) + 's' : 'n/a'})` : 
-          (ollamaRes.data.error || 'Connection failed') + (ollamaTime ? ` (Time: ${ollamaTime.toFixed(2)}s)` : '')
+        status: ollamaRes.status === 'fulfilled' && ollamaRes.value.data.status === 'ok' ? 'ok' : 'error',
+        details: ollamaRes.status === 'fulfilled' && ollamaRes.value.data.status === 'ok' ? 
+          `Models: ${ollamaRes.value.data.models?.join(', ') || 'No models found'} (Time: ${ollamaTime ? ollamaTime.toFixed(2) + 's' : 'n/a'})` : 
+          'Connection failed'
       });
       setDockerStatus({
-        status: dockerRes.data.status === 'ok' ? 'ok' : 'error',
-        containers: dockerRes.data.containers || [],
+        status: dockerRes.status === 'fulfilled' && dockerRes.value.data.status === 'ok' ? 'ok' : 'error',
+        containers: dockerRes.status === 'fulfilled' ? dockerRes.value.data.containers || [] : [],
         responseTime: dockerTime,
-        error: dockerRes.data.error || null
+        error: dockerRes.status === 'fulfilled' ? dockerRes.value.data.error || null : 'Connection failed'
       });
-      // update history
-      setDockerHistory(prev => {
-        const updated = { ...prev };
-        const list = dockerRes.data.containers || [];
-        list.forEach(c => {
-          if (!updated[c.name]) {
-            updated[c.name] = { cpu: [], mem: [] };
-          }
-          updated[c.name].cpu = [...updated[c.name].cpu.slice(-19), c.cpu_percent];
-          updated[c.name].mem = [...updated[c.name].mem.slice(-19), c.mem_percent];
+      
+      // Update history
+      if (dockerRes.status === 'fulfilled' && dockerRes.value.data.containers) {
+        setDockerHistory(prev => {
+          const updated = { ...prev };
+          const list = dockerRes.value.data.containers;
+          list.forEach(c => {
+            if (!updated[c.name]) {
+              updated[c.name] = { cpu: [], mem: [] };
+            }
+            updated[c.name].cpu = [...updated[c.name].cpu.slice(-19), c.cpu_percent];
+            updated[c.name].mem = [...updated[c.name].mem.slice(-19), c.mem_percent];
+          });
+          return updated;
         });
-        return updated;
-      });
+      }
+      
       setStatusLoaded(true);
-      console.log(`Total status fetch time: ${(t1-t0).toFixed(2)}ms`);
-    } catch (e) {
       const t1 = performance.now();
-      console.error('Error fetching statuses:', e);
-      setDbStatus({ status: 'error', details: e.message || 'Connection failed' });
-      setOllamaStatus({ status: 'error', details: e.message || 'Connection failed' });
-      setDockerStatus({ status: 'error', details: e.message || 'Connection failed' });
+    } catch (e) {
+      setDbStatus({ status: 'error', details: 'Network error' });
+      setOllamaStatus({ status: 'error', details: 'Network error' });
+      setDockerStatus({ status: 'error', containers: [], responseTime: null, error: 'Network error' });
       setStatusLoaded(true);
-      console.log(`Total status fetch time (error): ${(t1-t0).toFixed(2)}ms`);
+      const t1 = performance.now();
     }
   };
 
@@ -479,47 +579,72 @@ function App() {
   };
 
   useEffect(() => {
-    fetchStatuses();
-    fetchSessions();
+    // Add a small delay to ensure everything is ready
+    const timer = setTimeout(() => {
+      fetchStatuses();
+      fetchSessions();
+    }, 1000);
+    
     // Check status every 30 seconds instead of 5 seconds to reduce flickering
     const interval = setInterval(fetchStatuses, 30000);
-    return () => clearInterval(interval);
+    return () => {
+      clearTimeout(timer);
+      clearInterval(interval);
+    };
   }, []);
 
   // --- WebSocket for live docker stats ---
   useEffect(() => {
-    const ws = new WebSocket(`${WS_URL}/ws/docker_stats`);
+    const connectWebSocket = async () => {
+      // Wait for backend to be ready before connecting WebSocket
+      const backendReady = await waitForBackend(5, 2000);
+      if (!backendReady) {
+        console.error('Backend not ready for WebSocket connection');
+        return;
+      }
 
-    ws.onmessage = (event) => {
-      try {
-        const msg = JSON.parse(event.data);
-        const list = msg.containers || [];
+      const ws = new WebSocket(`${WS_URL}/ws/docker_stats`);
 
-        setDockerStatus(prev => ({
-          status: 'ok',
-          containers: list,
-          responseTime: 0,
-          error: null
-        }));
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          const list = msg.containers || [];
 
-        // update history
-        setDockerHistory(prev => {
-          const updated = { ...prev };
-          list.forEach(c => {
-            if (!updated[c.name]) updated[c.name] = { cpu: [], mem: [] };
-            updated[c.name].cpu = [...updated[c.name].cpu.slice(-119), c.cpu_percent];
-            updated[c.name].mem = [...updated[c.name].mem.slice(-119), c.mem_percent];
+          setDockerStatus(prev => ({
+            status: 'ok',
+            containers: list,
+            responseTime: 0,
+            error: null
+          }));
+
+          // update history
+          setDockerHistory(prev => {
+            const updated = { ...prev };
+            list.forEach(c => {
+              if (!updated[c.name]) updated[c.name] = { cpu: [], mem: [] };
+              updated[c.name].cpu = [...updated[c.name].cpu.slice(-119), c.cpu_percent];
+              updated[c.name].mem = [...updated[c.name].mem.slice(-119), c.mem_percent];
+            });
+            return updated;
           });
-          return updated;
-        });
-      } catch {}
+        } catch {}
+      };
+
+      ws.onerror = () => {
+        console.error('Docker WS error');
+      };
+
+      return ws;
     };
 
-    ws.onerror = () => {
-      console.error('Docker WS error');
-    };
+    let ws = null;
+    connectWebSocket().then(websocket => {
+      ws = websocket;
+    });
 
-    return () => ws.close();
+    return () => {
+      if (ws) ws.close();
+    };
   }, []);
 
   const handleSessionSelect = (session) => {

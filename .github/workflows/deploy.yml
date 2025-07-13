@@ -1,0 +1,49 @@
+name: Build and Deploy React App
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🟢 Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: 📦 Install dependencies
+        run: |
+          cd frontend
+          npm ci
+
+      - name: 🧹 Lint
+        run: |
+          cd frontend
+          npm run lint || echo "Lint errors ignored"
+
+      - name: 🔒 Security scan
+        run: |
+          cd frontend
+          npm audit --production || echo "Audit issues ignored"
+
+      - name: 🏗 Build
+        run: |
+          cd frontend
+          npm run build
+
+      - name: 🚀 Deploy to GitHub Pages
+        if: github.ref == 'refs/heads/main'
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./frontend/build 

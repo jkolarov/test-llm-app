@@ -1,6 +1,6 @@
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, validator
 import asyncpg
 import httpx
 import os
@@ -47,7 +47,7 @@ async def init_db():
             );
         """)
         
-        # Create messages table with vector embeddings
+        # Create messages table with vector embeddings and performance data
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS messages (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -55,6 +55,7 @@ async def init_db():
                 role TEXT NOT NULL CHECK (role IN ('user', 'ai')),
                 content TEXT NOT NULL,
                 embedding vector(384),
+                performance_data JSONB,
                 created_at TIMESTAMP DEFAULT NOW()
             );
         """)
@@ -76,6 +77,7 @@ async def init_db():
 class ChatRequest(BaseModel):
     message: str
     session_id: Optional[str] = None
+    model: Optional[str] = 'mistral:7b'
 
 class ChatResponse(BaseModel):
     response: str
@@ -96,6 +98,18 @@ class Message(BaseModel):
     role: str
     content: str
     created_at: datetime
+    performance_data: Optional[dict] = None
+
+    @validator('performance_data', pre=True)
+    def parse_performance_data(cls, v):
+        if v is None:
+            return None
+        if isinstance(v, str):
+            try:
+                return json.loads(v)
+            except (json.JSONDecodeError, TypeError):
+                return None
+        return v
 
 # Simple embedding function (placeholder - in production, use a proper embedding model)
 def get_embedding(text: str) -> str:
@@ -273,6 +287,11 @@ async def search_web(query: str):
     except Exception as e:
         return {"status": "error", "error": str(e)}
 
+# Health check endpoint
+@app.get("/api/health")
+async def health_check():
+    return {"status": "ok", "message": "Backend is running"}
+
 # DB status endpoint
 @app.get("/api/db_status")
 async def db_status():
@@ -299,28 +318,25 @@ async def db_status():
 # Ollama status endpoint
 @app.get("/api/ollama_status")
 async def ollama_status():
-    import time
-    start = time.time()
     try:
-        print(f"🔍 Checking Ollama status at: {OLLAMA_URL}")
-        # Configure httpx client with proper timeouts
-        timeout = httpx.Timeout(5.0, connect=2.0, read=3.0, write=2.0)
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        start_time = time.time()
+        async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.get(f"{OLLAMA_URL}/api/tags")
-            elapsed = time.time() - start
-            print(f"📄 Ollama response status: {resp.status_code} in {elapsed:.2f}s")
+            elapsed = time.time() - start_time
+            
             if resp.status_code == 200:
                 data = resp.json()
                 models = data.get("models", [])
-                print(f"✅ Ollama models found: {len(models)}")
-                return {"status": "ok", "models": models, "response_time": elapsed}
+                return {
+                    "status": "ok", 
+                    "models": [model["name"] for model in models],
+                    "response_time": elapsed
+                }
             else:
-                print(f"❌ Ollama error: {resp.text}")
-                return {"status": "error", "error": resp.text, "response_time": elapsed}
+                return {"status": "error", "error": resp.text}
     except Exception as e:
-        elapsed = time.time() - start
-        print(f"❌ Ollama exception: {str(e)} after {elapsed:.2f}s")
-        return {"status": "error", "error": str(e) or 'Ollama connection failed', "response_time": elapsed}
+        elapsed = time.time() - start_time
+        return {"status": "error", "error": str(e)}
 
 # Global cache for docker statistics
 _docker_stats_cache: list = []
@@ -442,7 +458,7 @@ async def get_session_messages(session_id: str):
     try:
         conn = await asyncpg.connect(DATABASE_URL)
         rows = await conn.fetch("""
-            SELECT id, session_id, role, content, created_at 
+            SELECT id, session_id, role, content, created_at, performance_data 
             FROM messages 
             WHERE session_id = $1 
             ORDER BY created_at ASC
@@ -454,7 +470,8 @@ async def get_session_messages(session_id: str):
                 session_id=str(row['session_id']),
                 role=row['role'],
                 content=row['content'],
-                created_at=row['created_at']
+                created_at=row['created_at'],
+                performance_data=row['performance_data']
             )
             for row in rows
         ]
@@ -466,6 +483,9 @@ async def get_session_messages(session_id: str):
 @app.post("/api/ollama_chat")
 async def ollama_chat(req: ChatRequest):
     try:
+        # Log the model being used
+        selected_model = req.model or "mistral:7b"
+        
         conn = await asyncpg.connect(DATABASE_URL)
         
         # Create session if not provided
@@ -487,12 +507,8 @@ async def ollama_chat(req: ChatRequest):
         # Check if web search is needed
         web_info = ""
         if needs_web_search(req.message):
-            print(f"🔍 Web search triggered for: {req.message}")
             web_info = await web_search(req.message)
-            print(f"📄 Web search results: {web_info[:200]}...")
             web_info = f"\n[Web Search Results: {web_info}]\n"
-        else:
-            print(f"❌ Web search NOT triggered for: {req.message}")
         
         # Get relevant context from previous conversations
         context_messages = await conn.fetch("""
@@ -511,34 +527,21 @@ async def ollama_chat(req: ChatRequest):
                 context += f"{msg['role'].upper()}: {msg['content']}\n"
             context += "\nCurrent conversation:\n"
         
-        # Prepare prompt with context and web search results
-        system_prompt = """You are a helpful AI assistant with access to web search results. 
-When provided with web search information, use it to give accurate and up-to-date answers.
-
-IMPORTANT RULES:
-1. If web search results are provided, use them as your primary source of information.
-2. If web search results are available, start your response with "Based on my web search:" and then provide the information.
-3. If web search results indicate that current information is not available (like fallback messages), acknowledge this clearly.
-4. NEVER provide outdated information from your training data when web search indicates current data is not available.
-5. For sports queries, if web search doesn't find current schedules, say "I couldn't find current schedule information" and suggest checking official websites.
-6. For financial queries, if web search doesn't find current data, say "I couldn't find current market data" and suggest checking financial websites.
-7. Always be transparent about the limitations of available information.
-
-For sports queries, focus on current season information, upcoming matches, and recent results.
-For financial queries, provide current market information when available.
-If no specific current information is available from web search, acknowledge this and suggest checking official websites.
-Always be helpful and informative, even when current information is limited."""
-        
-        full_prompt = f"{system_prompt}\n\n{context}{web_info}USER: {req.message}\nASSISTANT:"
+        # Prepare prompt with context and web search results (NO SYSTEM PROMPT)
+        full_prompt = f"{context}{web_info}USER: {req.message}\nASSISTANT:"
         
         # Call Ollama
         # Configure httpx client with proper timeouts for longer generation requests
-        timeout = httpx.Timeout(60.0, connect=5.0, read=55.0, write=5.0)
+        # Use longer timeout for llama3.1:latest model
+        if selected_model == 'llama3.1:latest':
+            timeout = httpx.Timeout(300.0, connect=10.0, read=290.0, write=10.0)  # 5 minutes for llama3.1
+        else:
+            timeout = httpx.Timeout(60.0, connect=5.0, read=55.0, write=5.0)
         async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.post(
                 f"{OLLAMA_URL}/api/generate",
                 json={
-                    "model": "mistral:7b", 
+                    "model": selected_model,
                     "prompt": full_prompt,
                     "stream": False
                 },
@@ -548,12 +551,45 @@ Always be helpful and informative, even when current information is limited."""
                 data = resp.json()
                 ai_response = data.get("response", "")
                 
-                # Store AI response
+                # Log verbose performance data
+                total_duration = data.get("total_duration", 0)
+                load_duration = data.get("load_duration", 0)
+                prompt_eval_count = data.get("prompt_eval_count", 0)
+                prompt_eval_duration = data.get("prompt_eval_duration", 0)
+                eval_count = data.get("eval_count", 0)
+                eval_duration = data.get("eval_duration", 0)
+                
+                if total_duration > 0:
+                    # Convert from nanoseconds to seconds
+                    total_duration_s = total_duration / 1_000_000_000
+                    load_duration_s = load_duration / 1_000_000_000
+                    prompt_eval_duration_s = prompt_eval_duration / 1_000_000_000
+                    eval_duration_s = eval_duration / 1_000_000_000
+                    
+                    prompt_rate = prompt_eval_count / prompt_eval_duration_s if prompt_eval_duration_s > 0 else 0
+                    eval_rate = eval_count / eval_duration_s if eval_duration_s > 0 else 0
+                
+                # Store AI response with performance data
                 ai_embedding = get_embedding(ai_response)
+                performance_json = None
+                if total_duration > 0:
+                    performance_json = {
+                        "total_duration": total_duration_s,
+                        "load_duration": load_duration_s,
+                        "prompt_eval_count": prompt_eval_count,
+                        "prompt_eval_duration": prompt_eval_duration_s,
+                        "eval_count": eval_count,
+                        "eval_duration": eval_duration_s,
+                        "prompt_rate": prompt_rate,
+                        "eval_rate": eval_rate
+                    }
+                if performance_json is not None:
+                    performance_json = json.dumps(performance_json)
+                
                 await conn.execute("""
-                    INSERT INTO messages (session_id, role, content, embedding) 
-                    VALUES ($1, $2, $3, $4)
-                """, req.session_id, 'ai', ai_response, ai_embedding)
+                    INSERT INTO messages (session_id, role, content, embedding, performance_data) 
+                    VALUES ($1, $2, $3, $4, $5)
+                """, req.session_id, 'ai', ai_response, ai_embedding, performance_json)
                 
                 # Update session timestamp
                 await conn.execute("""

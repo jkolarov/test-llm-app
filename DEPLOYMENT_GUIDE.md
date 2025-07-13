@@ -1,417 +1,234 @@
-# LLM App Production Deployment Guide
+# Deployment Guide
 
-## Overview
+This guide covers deploying the full-stack AI chat application to different platforms.
 
-This guide provides a complete production deployment strategy for the LLM App with safe PR workflow and rollback capabilities.
+## Architecture Overview
 
-## Repository Structure
+- **Frontend**: React SPA (deployed to GitHub Pages)
+- **Backend**: FastAPI with PostgreSQL and Ollama (requires Docker + GPU)
+- **Database**: PostgreSQL with pgvector
+- **AI**: Ollama with NVIDIA GPU support
 
-```
-main                    # Development branch (current working code)
-├── deploy/
-│   ├── production/     # Production deployment branch
-│   └── staging/        # Staging/testing branch
-```
+## Deployment Options
 
-## Deployment Strategy
+### Option 1: GitHub Pages (Frontend Only)
 
-### 1. **Safe PR Workflow**
+The frontend can be deployed to GitHub Pages, but you'll need to:
 
-#### Development → Production PR Process:
-1. **Create Feature Branch**: `git checkout -b feature/new-feature`
-2. **Develop & Test**: Make changes and test locally
-3. **Push to Main**: `git push origin main`
-4. **Create PR**: `main` → `deploy/production`
-5. **Review & Test**: Test on staging server
-6. **Merge to Production**: Deploy to production server
-7. **Rollback**: If issues arise, revert the PR
+1. **Deploy the backend separately** (see options below)
+2. **Update the API URL** in the frontend to point to your deployed backend
 
-### 2. **Branch Protection Rules**
+#### Steps:
+1. Push to main branch
+2. GitHub Actions will automatically build and deploy to GitHub Pages
+3. Update `REACT_APP_API_URL` environment variable to point to your backend
 
-Set up GitHub branch protection for `deploy/production`:
-- Require PR reviews
-- Require status checks
-- Require up-to-date branches
-- Restrict direct pushes
+### Option 2: Full Stack Deployment (Recommended)
 
-## Server Setup
+For a complete deployment, you need:
 
-### 1. **Initial Server Preparation**
+#### Prerequisites:
+- Docker and Docker Compose
+- NVIDIA GPU with drivers
+- NVIDIA Container Toolkit
+- Domain name (optional)
 
-```bash
-# SSH to your Debian server
-ssh user@your-server-ip
+#### Deployment Steps:
 
-# Run the setup script as root
-sudo ./deploy/setup-server.sh
-```
+1. **Clone the repository:**
+   ```bash
+   git clone https://github.com/jkolarov/test-llm-app.git
+   cd test-llm-app
+   ```
 
-### 2. **Clone Repository**
+2. **Configure environment variables:**
+   ```bash
+   # Create .env file
+   cp env.production.example .env
+   # Edit .env with your configuration
+   ```
 
-```bash
-cd /opt
-git clone https://github.com/jkolarov/test-llm-app.git llm-app
-cd llm-app
-```
+3. **Deploy with Docker Compose:**
+   ```bash
+   docker compose -f docker-compose.prod.yml up -d
+   ```
 
-### 3. **Configure Environment**
+4. **Access the application:**
+   - Frontend: http://your-domain:3000
+   - Backend API: http://your-domain:8000
+   - Ollama: http://your-domain:11434
 
-```bash
-# Copy environment template
-cp env.production.example .env.production
+### Option 3: Cloud Deployment
 
-# Edit environment variables
-nano .env.production
-```
+#### AWS/GCP/Azure:
+- Use GPU instances for Ollama
+- Deploy PostgreSQL to managed service
+- Use load balancer for frontend/backend
 
-**Required Environment Variables:**
-```bash
-# Database
-DB_PASSWORD=your_secure_password_here
+#### Railway/Render/Heroku:
+- Backend can be deployed to these platforms
+- Frontend can be deployed to Vercel/Netlify
+- Note: GPU support may be limited
 
-# Domain Configuration
-DOMAIN=your-domain.com
-FRONTEND_URL=https://your-domain.com
-API_URL=https://your-domain.com/api
+## Environment Variables
 
-# Security
-SECRET_KEY=your_secret_key_here
-JWT_SECRET=your_jwt_secret_here
+### Frontend (.env):
+```env
+REACT_APP_API_URL=http://your-backend-domain:8000
 ```
 
-## Deployment Process
-
-### 1. **Initial Deployment**
-
-```bash
-# Make deployment script executable
-chmod +x deploy/deploy.sh
-
-# Start the application
-./deploy/deploy.sh start
+### Backend (.env):
+```env
+DATABASE_URL=postgresql://user:password@host:5432/dbname
+OLLAMA_URL=http://ollama:11434
 ```
 
-### 2. **SSL Certificate Setup**
+## Production Configuration
 
-```bash
-# Install SSL certificate
-certbot --nginx -d your-domain.com
+### Docker Compose Production:
+```yaml
+# docker-compose.prod.yml
+version: '3.9'
+services:
+  frontend:
+    build: ./frontend
+    ports:
+      - "80:3000"
+    environment:
+      - REACT_APP_API_URL=http://your-domain/api
+    depends_on:
+      - backend
 
-# Test certificate renewal
-certbot renew --dry-run
-```
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://user:password@db:5432/dbname
+    depends_on:
+      - db
+      - ollama
 
-### 3. **Verify Deployment**
+  db:
+    image: ankane/pgvector
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: dbname
+    volumes:
+      - pgdata:/var/lib/postgresql/data
 
-```bash
-# Check service health
-./deploy/deploy.sh health
+  ollama:
+    image: ollama/ollama:latest
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+    volumes:
+      - ollama_data:/root/.ollama
 
-# View logs
-docker-compose -f docker-compose.prod.yml logs -f
-
-# Monitor system
-./monitor.sh
-```
-
-## PR Workflow for Updates
-
-### 1. **Development Process**
-
-```bash
-# Create feature branch
-git checkout -b feature/update-feature
-
-# Make changes
-# Test locally
-git add .
-git commit -m "Add new feature"
-git push origin feature/update-feature
-```
-
-### 2. **Create Pull Request**
-
-1. Go to GitHub repository
-2. Create PR: `feature/update-feature` → `main`
-3. Review and merge to `main`
-4. Create PR: `main` → `deploy/production`
-5. Test on staging server
-6. Deploy to production
-
-### 3. **Production Deployment**
-
-```bash
-# On production server
-cd /opt/llm-app
-
-# Pull latest changes
-git pull origin deploy/production
-
-# Update services
-./deploy/deploy.sh update
-```
-
-## Rollback Procedures
-
-### 1. **Quick Rollback**
-
-```bash
-# Rollback to previous version
-./deploy/deploy.sh rollback
-```
-
-### 2. **Manual Rollback**
-
-```bash
-# Stop services
-./deploy/deploy.sh stop
-
-# Revert to previous commit
-git log --oneline -5
-git reset --hard <previous-commit-hash>
-
-# Restart services
-./deploy/deploy.sh start
-```
-
-### 3. **Database Rollback**
-
-```bash
-# List available backups
-ls -la backups/
-
-# Restore from backup
-docker-compose -f docker-compose.prod.yml exec -T db psql -U postgres postgres < backups/backup_YYYYMMDD_HHMMSS.sql
-```
-
-## Monitoring & Maintenance
-
-### 1. **Daily Monitoring**
-
-```bash
-# Check system status
-./monitor.sh
-
-# View application logs
-docker-compose -f docker-compose.prod.yml logs --tail=100
-
-# Check disk space
-df -h
-
-# Check memory usage
-free -h
-```
-
-### 2. **Weekly Maintenance**
-
-```bash
-# Update system packages
-sudo apt update && sudo apt upgrade -y
-
-# Clean Docker images
-docker system prune -f
-
-# Check SSL certificate
-certbot certificates
-
-# Review logs
-tail -f deploy/deploy.log
-```
-
-### 3. **Monthly Tasks**
-
-```bash
-# Review and rotate logs
-logrotate -f /etc/logrotate.d/llm-app
-
-# Test backup restoration
-# (Test in staging environment)
-
-# Security audit
-fail2ban-client status
+volumes:
+  pgdata:
+  ollama_data:
 ```
 
 ## Security Considerations
 
-### 1. **Firewall Configuration**
+1. **Environment Variables**: Never commit secrets to Git
+2. **HTTPS**: Use SSL certificates for production
+3. **Firewall**: Restrict access to necessary ports only
+4. **Database**: Use strong passwords and restrict network access
+5. **API Keys**: Rotate regularly and use least privilege
 
+## Monitoring and Maintenance
+
+### Health Checks:
+- Frontend: http://your-domain/health
+- Backend: http://your-domain:8000/api/health
+- Database: Check connection status
+- Ollama: Check model availability
+
+### Logs:
 ```bash
-# Check firewall status
-sudo ufw status
+# View all logs
+docker compose logs -f
 
-# Allow only necessary ports
-sudo ufw allow 22/tcp    # SSH
-sudo ufw allow 80/tcp    # HTTP
-sudo ufw allow 443/tcp   # HTTPS
+# View specific service
+docker compose logs -f backend
+docker compose logs -f frontend
 ```
 
-### 2. **SSL/TLS Security**
-
+### Updates:
 ```bash
-# Check SSL configuration
-nginx -t
+# Pull latest changes
+git pull origin main
 
-# Test SSL security
-curl -I https://your-domain.com
-```
-
-### 3. **Database Security**
-
-```bash
-# Change default passwords
-# Use strong passwords in .env.production
-
-# Regular backups
-./backup.sh
-
-# Monitor database connections
-docker-compose -f docker-compose.prod.yml exec db psql -U postgres -c "SELECT * FROM pg_stat_activity;"
+# Rebuild and restart
+docker compose down
+docker compose up -d --build
 ```
 
 ## Troubleshooting
 
-### Common Issues
+### Common Issues:
 
-1. **Ollama Model Not Loading**
+1. **GPU not detected:**
    ```bash
-   # Check GPU availability
+   nvidia-smi  # Check GPU status
+   docker run --rm --gpus all nvidia/cuda:11.0-base nvidia-smi
+   ```
+
+2. **Ollama model not loading:**
+   ```bash
+   docker compose logs ollama
+   # Check available VRAM
    nvidia-smi
-   
-   # Download model manually
-   docker exec llm-app-ollama-1 ollama pull mistral:7b
    ```
 
-2. **Database Connection Issues**
+3. **Database connection failed:**
    ```bash
-   # Check database status
-   docker-compose -f docker-compose.prod.yml exec db pg_isready
-   
-   # Restart database
-   docker-compose -f docker-compose.prod.yml restart db
+   docker compose logs db
+   # Check if database is running
+   docker compose ps db
    ```
 
-3. **Nginx Configuration Issues**
-   ```bash
-   # Test nginx configuration
-   docker-compose -f docker-compose.prod.yml exec nginx nginx -t
-   
-   # Reload nginx
-   docker-compose -f docker-compose.prod.yml exec nginx nginx -s reload
-   ```
+4. **Frontend can't connect to backend:**
+   - Check CORS configuration
+   - Verify API URL in frontend
+   - Check network connectivity
 
-### Emergency Procedures
+### Performance Optimization:
 
-1. **Complete System Failure**
-   ```bash
-   # Stop all services
-   ./deploy/deploy.sh stop
-   
-   # Check system resources
-   htop
-   df -h
-   free -h
-   
-   # Restart services
-   ./deploy/deploy.sh start
-   ```
+1. **GPU Memory**: Monitor VRAM usage
+2. **Database**: Add indexes for better performance
+3. **Caching**: Implement Redis for session storage
+4. **Load Balancing**: Use multiple backend instances
 
-2. **Data Loss Prevention**
-   ```bash
-   # Create immediate backup
-   ./backup.sh
-   
-   # Check backup integrity
-   gunzip -t backups/latest_backup.sql.gz
-   ```
+## CI/CD Pipeline
 
-## Performance Optimization
+The repository includes GitHub Actions workflows:
 
-### 1. **Resource Monitoring**
+- **Frontend**: Builds and deploys to GitHub Pages
+- **Backend**: Tests and validates Python code
+- **Security**: Runs security scans on dependencies
 
+### Manual Deployment:
 ```bash
-# Monitor CPU usage
-htop
+# Frontend only
+cd frontend
+npm run deploy
 
-# Monitor GPU usage (if available)
-nvidia-smi -l 1
-
-# Monitor disk I/O
-iotop
+# Full stack
+docker compose -f docker-compose.prod.yml up -d
 ```
 
-### 2. **Docker Optimization**
+## Support
 
-```bash
-# Clean unused Docker resources
-docker system prune -a
-
-# Monitor container resource usage
-docker stats
-```
-
-### 3. **Database Optimization**
-
-```bash
-# Check database performance
-docker-compose -f docker-compose.prod.yml exec db psql -U postgres -c "SELECT * FROM pg_stat_database;"
-```
-
-## Backup Strategy
-
-### 1. **Automated Backups**
-
-- **Frequency**: Daily at 2 AM
-- **Retention**: 30 days
-- **Location**: `/opt/llm-app/backups/`
-
-### 2. **Manual Backups**
-
-```bash
-# Create manual backup
-./backup.sh
-
-# Create full system backup
-tar -czf /backup/system_$(date +%Y%m%d).tar.gz /opt/llm-app/
-```
-
-### 3. **Backup Verification**
-
-```bash
-# Test backup restoration (in staging)
-docker-compose -f docker-compose.prod.yml exec -T db psql -U postgres postgres < backup_file.sql
-```
-
-## Support & Documentation
-
-### 1. **Log Locations**
-
-- Application logs: `docker-compose -f docker-compose.prod.yml logs`
-- Deployment logs: `/opt/llm-app/deploy/deploy.log`
-- System logs: `/var/log/syslog`
-- Nginx logs: `/var/log/nginx/`
-
-### 2. **Useful Commands**
-
-```bash
-# Quick status check
-./monitor.sh
-
-# View real-time logs
-docker-compose -f docker-compose.prod.yml logs -f
-
-# Check service health
-curl -f http://localhost/health
-
-# Database backup
-./backup.sh
-```
-
-### 3. **Emergency Contacts**
-
-- System Administrator: [Your Contact]
-- Database Administrator: [Your Contact]
-- DevOps Team: [Your Contact]
+For issues and questions:
+1. Check the logs first
+2. Review this deployment guide
+3. Check the main README.md
+4. Open an issue on GitHub
 
 ---
 
-**Remember**: Always test changes in staging before deploying to production, and keep regular backups of your data. 
+**Note**: This is a development/demo application. For production use, implement proper security measures, monitoring, and backup strategies. 

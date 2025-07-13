@@ -1,0 +1,63 @@
+name: Integration & E2E Tests
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🐳 Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 🧪 Run backend tests in container
+        run: |
+          cd backend
+          docker build -t backend-test .
+          docker run --rm backend-test pytest -v
+
+      - name: 🧪 Run frontend tests in container
+        run: |
+          cd frontend
+          docker build -t frontend-test .
+          docker run --rm frontend-test npm test -- --run
+
+  e2e:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🟢 Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: 📦 Install dependencies
+        run: |
+          cd frontend
+          npm ci
+          npx playwright install --with-deps
+
+      - name: 🧪 Run E2E tests
+        run: |
+          cd tests/e2e
+          npx playwright test --reporter=html
+
+      - name: 📤 Upload E2E test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: playwright-report
+          path: tests/e2e/playwright-report/
+          retention-days: 30 

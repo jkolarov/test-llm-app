@@ -36,7 +36,25 @@ jobs:
           pip install safety
           safety check || echo "Security issues ignored"
 
+      - name: 🧪 Run unit tests
+        run: |
+          cd backend
+          python -m pytest test_main.py -v --tb=short
+
       - name: 🧪 Test imports
         run: |
           cd backend
-          python -c "import main; print('✅ Backend imports successfully')" 
+          python -c "import main; print('✅ Backend imports successfully')"
+
+      - name: 📊 Test coverage
+        run: |
+          cd backend
+          pip install pytest-cov
+          python -m pytest test_main.py --cov=main --cov-report=xml --cov-report=term-missing
+
+      - name: 📤 Upload coverage to Codecov
+        uses: codecov/codecov-action@v3
+        with:
+          file: ./backend/coverage.xml
+          flags: backend
+          name: backend-coverage 

@@ -35,8 +35,10 @@ class TestHealthEndpoints:
         # Handle both success and error cases
         if data["status"] == "ok":
             assert "response_time" in data
+            assert "models" in data
         else:
             assert "error" in data
+            # Note: error case doesn't include response_time in actual implementation
     
     def test_docker_stats_endpoint(self):
         """Test Docker stats endpoint"""

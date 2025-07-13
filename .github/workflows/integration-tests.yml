@@ -10,52 +10,24 @@ jobs:
   integration:
     runs-on: ubuntu-latest
     
-    services:
-      postgres:
-        image: ankane/pgvector
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: postgres
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 5432:5432
-
     steps:
       - name: 📥 Checkout code
         uses: actions/checkout@v4
 
-      - name: 🐍 Setup Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
+      - name: 🐳 Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-      - name: 📦 Install Python dependencies
+      - name: 🧪 Run backend tests in container
         run: |
           cd backend
-          pip install -r requirements.txt
-          pip install docker
+          docker build -t backend-test .
+          docker run --rm backend-test pytest -v
 
-      - name: 🟢 Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: frontend/package-lock.json
-
-      - name: 📦 Install Node dependencies
+      - name: 🧪 Run frontend tests in container
         run: |
           cd frontend
-          npm ci
-
-      - name: 🧪 Run integration tests
-        run: |
-          cd tests/integration
-          python -m pytest test_full_stack.py -v
+          docker build -t frontend-test .
+          docker run --rm frontend-test npm test -- --run
 
   e2e:
     runs-on: ubuntu-latest

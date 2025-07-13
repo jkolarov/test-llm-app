@@ -97,10 +97,10 @@ describe('Chat Functionality', () => {
 
   it('shows model dropdown with options', () => {
     renderWithTheme(<App />);
-    // Check that the model dropdown exists
-    expect(screen.getByText(/Model/i)).toBeInTheDocument();
-    // The dropdown should be present (combobox role)
+    // Check that the model dropdown exists by looking for the combobox role
     expect(screen.getByRole('combobox')).toBeInTheDocument();
+    // Check that the dropdown has a value (default model)
+    expect(screen.getByDisplayValue(/llama3.1:8b/i)).toBeInTheDocument();
   });
 });
 

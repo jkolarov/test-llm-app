@@ -1,15 +1,9 @@
-FROM node:18-alpine as build
+FROM node:20-alpine
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm install
 COPY . .
 ARG REACT_APP_API_URL
 ENV REACT_APP_API_URL=$REACT_APP_API_URL
-RUN npm run build
-
-FROM node:18-alpine as prod
-WORKDIR /app
-RUN npm install -g serve
-COPY --from=build /app/build ./build
-EXPOSE 3000
-CMD ["serve", "-s", "build", "-l", "3000"] 
+EXPOSE 5173
+CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0"] 

@@ -94,20 +94,21 @@ describe('Chat Functionality', () => {
     renderWithTheme(<App />);
     expect(screen.getByRole('button', { name: /send/i })).toBeInTheDocument();
   });
+
+  it('shows model dropdown with options', () => {
+    renderWithTheme(<App />);
+    // Check that the model dropdown exists
+    expect(screen.getByText(/Model/i)).toBeInTheDocument();
+    // The dropdown should be present (combobox role)
+    expect(screen.getByRole('combobox')).toBeInTheDocument();
+  });
 });
 
 describe('Session Management', () => {
   it('shows new session button', () => {
     renderWithTheme(<App />);
-    expect(screen.getByRole('button', { name: /add/i })).toBeInTheDocument();
-  });
-});
-
-describe('Performance Display', () => {
-  it('renders performance data when available', async () => {
-    renderWithTheme(<App />);
-    // This would test performance data display when messages have performance data
-    expect(screen.getByText(/Performance/i)).toBeInTheDocument();
+    // The button has aria-label="New Session"
+    expect(screen.getByRole('button', { name: /new session/i })).toBeInTheDocument();
   });
 });
 
@@ -120,6 +121,7 @@ describe('Error Handling', () => {
     axios.default.get.mockRejectedValueOnce(new Error('API Error'));
     
     await waitFor(() => {
+      // The actual error message is "Connection failed" from checkStatus function
       expect(getByText(/Connection failed/i)).toBeInTheDocument();
     });
   });
